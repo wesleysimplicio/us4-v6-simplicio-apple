@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 #include <vector>
 
@@ -26,14 +27,19 @@ enum class DeviceType {
 std::string_view ToString(DType dtype);
 std::string_view ToString(DeviceType device);
 std::size_t DTypeBitWidth(DType dtype);
+std::uint16_t EncodeFloat16(float value);
+float DecodeFloat16(std::uint16_t value);
+std::uint16_t EncodeBFloat16(float value);
+float DecodeBFloat16(std::uint16_t value);
 
 class Tensor {
- public:
+public:
   Tensor() = default;
-  Tensor(std::vector<std::size_t> shape, DType dtype, DeviceType device = DeviceType::kCpu);
+  Tensor(std::vector<std::size_t> shape, DType dtype,
+         DeviceType device = DeviceType::kCpu);
 
-  const std::vector<std::size_t>& Shape() const;
-  const std::vector<std::size_t>& Strides() const;
+  const std::vector<std::size_t> &Shape() const;
+  const std::vector<std::size_t> &Strides() const;
   DType dtype() const;
   DeviceType device() const;
 
@@ -43,18 +49,21 @@ class Tensor {
   bool Empty() const;
   bool IsContiguous() const;
 
-  const std::byte* Data() const;
-  std::byte* MutableData();
+  const std::byte *Data() const;
+  std::byte *MutableData();
 
-  const float* DataAsFloat32() const;
-  float* MutableDataAsFloat32();
+  const float *DataAsFloat32() const;
+  float *MutableDataAsFloat32();
+  const std::uint16_t *DataAsUInt16() const;
+  std::uint16_t *MutableDataAsUInt16();
 
   bool Reshape(std::vector<std::size_t> shape);
   void FillZero();
 
- private:
-  static std::vector<std::size_t> ComputeContiguousStrides(const std::vector<std::size_t>& shape);
-  static std::size_t ComputeElementCount(const std::vector<std::size_t>& shape);
+private:
+  static std::vector<std::size_t>
+  ComputeContiguousStrides(const std::vector<std::size_t> &shape);
+  static std::size_t ComputeElementCount(const std::vector<std::size_t> &shape);
 
   std::vector<std::size_t> shape_;
   std::vector<std::size_t> strides_;
@@ -63,4 +72,4 @@ class Tensor {
   std::vector<std::byte> storage_;
 };
 
-}  // namespace us4
+} // namespace us4

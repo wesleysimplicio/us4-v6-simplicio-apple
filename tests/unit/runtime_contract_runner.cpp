@@ -6,6 +6,7 @@
 #include <optional>
 #include <set>
 #include <string_view>
+#include <vector>
 
 #include "adapters/adapter_registry.h"
 #include "adapters/llama/llama_adapter.h"
@@ -69,6 +70,36 @@ std::filesystem::path RepoRoot() {
       .parent_path()
       .parent_path();
 #endif
+}
+
+void FillHalfTensor(us4::Tensor &tensor, const std::vector<float> &values,
+                    const bool bfloat16) {
+  std::uint16_t *data = tensor.MutableDataAsUInt16();
+  if (data == nullptr || values.size() != tensor.ElementCount()) {
+    return;
+  }
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    data[index] = bfloat16 ? us4::EncodeBFloat16(values[index])
+                           : us4::EncodeFloat16(values[index]);
+  }
+}
+
+float QuantizeHalfValue(const float value, const bool bfloat16) {
+  return bfloat16 ? us4::DecodeBFloat16(us4::EncodeBFloat16(value))
+                  : us4::DecodeFloat16(us4::EncodeFloat16(value));
+}
+
+bool FillHalfReferenceTensor(us4::Tensor &tensor,
+                             const std::vector<float> &values,
+                             const bool bfloat16) {
+  float *data = tensor.MutableDataAsFloat32();
+  if (data == nullptr || values.size() != tensor.ElementCount()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    data[index] = QuantizeHalfValue(values[index], bfloat16);
+  }
+  return true;
 }
 
 } // namespace
@@ -421,6 +452,18 @@ int main() {
                  "neon matmul should pick fp16 lane8 profile on arm64");
     ok &= Expect(matmulProfile.tileRows == 8U && matmulProfile.tileCols == 8U,
                  "neon matmul should keep 8x8 tile contract");
+    const us4::Tensor bf16Lhs({8, 16}, us4::DType::kBFloat16,
+                              us4::DeviceType::kCpu);
+    const us4::Tensor bf16Rhs({16, 24}, us4::DType::kBFloat16,
+                              us4::DeviceType::kCpu);
+    const us4::NeonMatmulProfile bf16MatmulProfile =
+        us4::PlanNeonMatmul(neonProbe, bf16Lhs, bf16Rhs);
+    ok &= Expect(
+        bf16MatmulProfile.flavor == us4::NeonKernelFlavor::kBf16Lane8,
+        "neon matmul should pick bf16 lane8 profile on arm64");
+    ok &= Expect(
+        bf16MatmulProfile.tileRows == 8U && bf16MatmulProfile.tileCols == 8U,
+        "neon matmul should keep 8x8 tile contract for bf16");
 
     const us4::Tensor query({1, 8, 64}, us4::DType::kFloat32,
                             us4::DeviceType::kCpu);
@@ -553,6 +596,86 @@ int main() {
     ok &= Expect(
         wideMatches,
         "neon attention should match scalar outputs for wide value tails");
+
+    us4::Tensor fp16MatmulLhs({2, 3}, us4::DType::kFloat16,
+                              us4::DeviceType::kCpu);
+    us4::Tensor fp16MatmulRhs({3, 5}, us4::DType::kFloat16,
+                              us4::DeviceType::kCpu);
+    us4::Tensor fp16NeonOut({2, 5}, us4::DType::kFloat32,
+                            us4::DeviceType::kCpu);
+    us4::Tensor fp16ScalarLhs({2, 3}, us4::DType::kFloat32,
+                              us4::DeviceType::kCpu);
+    us4::Tensor fp16ScalarRhs({3, 5}, us4::DType::kFloat32,
+                              us4::DeviceType::kCpu);
+    us4::Tensor fp16ScalarOut({2, 5}, us4::DType::kFloat32,
+                              us4::DeviceType::kCpu);
+    const std::vector<float> fp16LhsValues = {0.5F, -1.0F, 2.0F,
+                                              1.5F, 0.25F, -0.75F};
+    const std::vector<float> fp16RhsValues = {
+        0.25F, -0.5F, 1.0F,   0.75F, -1.25F, 1.5F,  0.0F, -0.25F,
+        0.5F,  1.0F,  -0.75F, 0.25F, 0.5F,   -1.5F, 0.25F};
+    FillHalfTensor(fp16MatmulLhs, fp16LhsValues, false);
+    FillHalfTensor(fp16MatmulRhs, fp16RhsValues, false);
+    ok &= Expect(FillHalfReferenceTensor(fp16ScalarLhs, fp16LhsValues, false),
+                 "scalar matmul should receive fp16-rounded lhs reference");
+    ok &= Expect(FillHalfReferenceTensor(fp16ScalarRhs, fp16RhsValues, false),
+                 "scalar matmul should receive fp16-rounded rhs reference");
+    ok &= Expect(
+        us4::NeonMatmul(fp16MatmulLhs, fp16MatmulRhs, fp16NeonOut, nullptr),
+        "neon matmul should execute fp16 inputs");
+    ok &= Expect(
+        us4::ScalarMatmul(fp16ScalarLhs, fp16ScalarRhs, fp16ScalarOut, nullptr),
+        "scalar matmul should provide fp16 reference");
+    const float *fp16NeonValues = fp16NeonOut.DataAsFloat32();
+    const float *fp16ScalarValues = fp16ScalarOut.DataAsFloat32();
+    bool fp16Matches = fp16NeonValues != nullptr && fp16ScalarValues != nullptr;
+    for (std::size_t index = 0; fp16Matches && index < 10U; ++index) {
+      const float diff = fp16NeonValues[index] - fp16ScalarValues[index];
+      fp16Matches = std::abs(diff) <= 1e-3F;
+    }
+    ok &= Expect(fp16Matches,
+                 "neon matmul should match scalar outputs for fp16 inputs");
+
+    us4::Tensor bf16MatmulLhs({3, 4}, us4::DType::kBFloat16,
+                              us4::DeviceType::kCpu);
+    us4::Tensor bf16MatmulRhs({4, 6}, us4::DType::kBFloat16,
+                              us4::DeviceType::kCpu);
+    us4::Tensor bf16NeonOut({3, 6}, us4::DType::kFloat32,
+                            us4::DeviceType::kCpu);
+    us4::Tensor bf16ScalarLhs({3, 4}, us4::DType::kFloat32,
+                              us4::DeviceType::kCpu);
+    us4::Tensor bf16ScalarRhs({4, 6}, us4::DType::kFloat32,
+                              us4::DeviceType::kCpu);
+    us4::Tensor bf16ScalarOut({3, 6}, us4::DType::kFloat32,
+                              us4::DeviceType::kCpu);
+    const std::vector<float> bf16LhsValues = {0.125F, 0.5F,   -0.75F, 1.25F,
+                                              -1.0F,  0.375F, 0.875F, -0.5F,
+                                              0.625F, -0.25F, 1.5F,   0.75F};
+    const std::vector<float> bf16RhsValues = {
+        0.25F, -0.5F, 0.75F,  1.0F,    -0.25F, 0.5F,    -0.75F, 0.125F,
+        0.5F,  -1.0F, 0.25F,  0.875F,  1.125F, -0.625F, 0.375F, 0.25F,
+        -0.5F, 0.75F, 0.625F, -0.125F, 1.0F,   -0.75F,  0.5F,   -0.25F};
+    FillHalfTensor(bf16MatmulLhs, bf16LhsValues, true);
+    FillHalfTensor(bf16MatmulRhs, bf16RhsValues, true);
+    ok &= Expect(FillHalfReferenceTensor(bf16ScalarLhs, bf16LhsValues, true),
+                 "scalar matmul should receive bf16-rounded lhs reference");
+    ok &= Expect(FillHalfReferenceTensor(bf16ScalarRhs, bf16RhsValues, true),
+                 "scalar matmul should receive bf16-rounded rhs reference");
+    ok &= Expect(
+        us4::NeonMatmul(bf16MatmulLhs, bf16MatmulRhs, bf16NeonOut, nullptr),
+        "neon matmul should execute bf16 inputs");
+    ok &= Expect(
+        us4::ScalarMatmul(bf16ScalarLhs, bf16ScalarRhs, bf16ScalarOut, nullptr),
+        "scalar matmul should provide bf16 reference");
+    const float *bf16NeonValues = bf16NeonOut.DataAsFloat32();
+    const float *bf16ScalarValues = bf16ScalarOut.DataAsFloat32();
+    bool bf16Matches = bf16NeonValues != nullptr && bf16ScalarValues != nullptr;
+    for (std::size_t index = 0; bf16Matches && index < 18U; ++index) {
+      const float diff = bf16NeonValues[index] - bf16ScalarValues[index];
+      bf16Matches = std::abs(diff) <= 1e-2F;
+    }
+    ok &= Expect(bf16Matches,
+                 "neon matmul should match scalar outputs for bf16 inputs");
 
     us4::HardwareProbeResult narrowNeonProbe = neonProbe;
     narrowNeonProbe.neonVectorBits = 64;

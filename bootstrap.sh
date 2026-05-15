@@ -409,7 +409,7 @@ cat > .starter-meta.json <<EOF
   "project_mode": "$PROJECT_MODE",
   "projects": $PROJECTS_JSON,
   "bootstrapped_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "starter_version": "0.1.10",
+  "starter_version": "0.1.11",
   "existing_instruction_files": $existing_files_json,
   "init_must_ask": [],
   "init_must_infer": ["team", "domain", "vision_oneliner", "personas_beyond_dev"],

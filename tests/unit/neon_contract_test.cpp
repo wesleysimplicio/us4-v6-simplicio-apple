@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstdint>
+#include <vector>
+
 #include "cpu/scalar_attention.h"
 #include "cpu/scalar_matmul.h"
 #include "neon/kernel_profile.h"
@@ -21,6 +25,40 @@ void FillSequence(float *data, const std::size_t count, const float scale,
                   const float bias) {
   for (std::size_t index = 0; index < count; ++index) {
     data[index] = (static_cast<float>((index % 7U) + 1U) * scale) + bias;
+  }
+}
+
+void FillFloat16Tensor(us4::Tensor &tensor, const std::vector<float> &values) {
+  std::uint16_t *data = tensor.MutableDataAsUInt16();
+  ASSERT_NE(data, nullptr);
+  ASSERT_EQ(values.size(), tensor.ElementCount());
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    data[index] = us4::EncodeFloat16(values[index]);
+  }
+}
+
+void FillBFloat16Tensor(us4::Tensor &tensor, const std::vector<float> &values) {
+  std::uint16_t *data = tensor.MutableDataAsUInt16();
+  ASSERT_NE(data, nullptr);
+  ASSERT_EQ(values.size(), tensor.ElementCount());
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    data[index] = us4::EncodeBFloat16(values[index]);
+  }
+}
+
+float QuantizeHalfValue(const float value, const bool bfloat16) {
+  return bfloat16 ? us4::DecodeBFloat16(us4::EncodeBFloat16(value))
+                  : us4::DecodeFloat16(us4::EncodeFloat16(value));
+}
+
+void FillHalfReferenceTensor(us4::Tensor &tensor,
+                             const std::vector<float> &values,
+                             const bool bfloat16) {
+  float *data = tensor.MutableDataAsFloat32();
+  ASSERT_NE(data, nullptr);
+  ASSERT_EQ(values.size(), tensor.ElementCount());
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    data[index] = QuantizeHalfValue(values[index], bfloat16);
   }
 }
 
@@ -152,6 +190,71 @@ TEST(NeonContractTest, NeonMatmulMatchesScalarResultForTailColumns) {
   ASSERT_NE(scalarValues, nullptr);
   for (std::size_t index = 0; index < 18U; ++index) {
     EXPECT_FLOAT_EQ(neonValues[index], scalarValues[index]) << index;
+  }
+}
+
+TEST(NeonContractTest, NeonMatmulExecutesFp16AndAccumulatesIntoFp32) {
+  us4::Tensor lhs({2, 3}, us4::DType::kFloat16, us4::DeviceType::kCpu);
+  us4::Tensor rhs({3, 5}, us4::DType::kFloat16, us4::DeviceType::kCpu);
+  us4::Tensor neonOutput({2, 5}, us4::DType::kFloat32, us4::DeviceType::kCpu);
+  us4::Tensor scalarLhs({2, 3}, us4::DType::kFloat32, us4::DeviceType::kCpu);
+  us4::Tensor scalarRhs({3, 5}, us4::DType::kFloat32, us4::DeviceType::kCpu);
+  us4::Tensor scalarOutput({2, 5}, us4::DType::kFloat32, us4::DeviceType::kCpu);
+
+  const std::vector<float> lhsValues = {0.5F, -1.0F, 2.0F, 1.5F, 0.25F, -0.75F};
+  const std::vector<float> rhsValues = {0.25F,  -0.5F, 1.0F,   0.75F, -1.25F,
+                                        1.5F,   0.0F,  -0.25F, 0.5F,  1.0F,
+                                        -0.75F, 0.25F, 0.5F,   -1.5F, 0.25F};
+  FillFloat16Tensor(lhs, lhsValues);
+  FillFloat16Tensor(rhs, rhsValues);
+  FillHalfReferenceTensor(scalarLhs, lhsValues, false);
+  FillHalfReferenceTensor(scalarRhs, rhsValues, false);
+
+  std::string error;
+  ASSERT_TRUE(us4::NeonMatmul(lhs, rhs, neonOutput, &error)) << error;
+  ASSERT_TRUE(us4::ScalarMatmul(scalarLhs, scalarRhs, scalarOutput, &error))
+      << error;
+
+  const float *neonValues = neonOutput.DataAsFloat32();
+  const float *scalarValues = scalarOutput.DataAsFloat32();
+  ASSERT_NE(neonValues, nullptr);
+  ASSERT_NE(scalarValues, nullptr);
+  for (std::size_t index = 0; index < 10U; ++index) {
+    EXPECT_NEAR(neonValues[index], scalarValues[index], 1e-3F) << index;
+  }
+}
+
+TEST(NeonContractTest, NeonMatmulExecutesBf16AndKeepsTailParity) {
+  us4::Tensor lhs({3, 4}, us4::DType::kBFloat16, us4::DeviceType::kCpu);
+  us4::Tensor rhs({4, 6}, us4::DType::kBFloat16, us4::DeviceType::kCpu);
+  us4::Tensor neonOutput({3, 6}, us4::DType::kFloat32, us4::DeviceType::kCpu);
+  us4::Tensor scalarLhs({3, 4}, us4::DType::kFloat32, us4::DeviceType::kCpu);
+  us4::Tensor scalarRhs({4, 6}, us4::DType::kFloat32, us4::DeviceType::kCpu);
+  us4::Tensor scalarOutput({3, 6}, us4::DType::kFloat32, us4::DeviceType::kCpu);
+
+  const std::vector<float> lhsValues = {0.125F, 0.5F,   -0.75F, 1.25F,
+                                        -1.0F,  0.375F, 0.875F, -0.5F,
+                                        0.625F, -0.25F, 1.5F,   0.75F};
+  const std::vector<float> rhsValues = {
+      0.25F, -0.5F, 0.75F,  1.0F,    -0.25F, 0.5F,    -0.75F, 0.125F,
+      0.5F,  -1.0F, 0.25F,  0.875F,  1.125F, -0.625F, 0.375F, 0.25F,
+      -0.5F, 0.75F, 0.625F, -0.125F, 1.0F,   -0.75F,  0.5F,   -0.25F};
+  FillBFloat16Tensor(lhs, lhsValues);
+  FillBFloat16Tensor(rhs, rhsValues);
+  FillHalfReferenceTensor(scalarLhs, lhsValues, true);
+  FillHalfReferenceTensor(scalarRhs, rhsValues, true);
+
+  std::string error;
+  ASSERT_TRUE(us4::NeonMatmul(lhs, rhs, neonOutput, &error)) << error;
+  ASSERT_TRUE(us4::ScalarMatmul(scalarLhs, scalarRhs, scalarOutput, &error))
+      << error;
+
+  const float *neonValues = neonOutput.DataAsFloat32();
+  const float *scalarValues = scalarOutput.DataAsFloat32();
+  ASSERT_NE(neonValues, nullptr);
+  ASSERT_NE(scalarValues, nullptr);
+  for (std::size_t index = 0; index < 18U; ++index) {
+    EXPECT_NEAR(neonValues[index], scalarValues[index], 1e-2F) << index;
   }
 }
 
