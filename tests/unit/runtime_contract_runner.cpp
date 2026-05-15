@@ -24,6 +24,7 @@
 #include "mlx/mlx_bridge.h"
 #include "moe/expert_pager.h"
 #include "moe/router.h"
+#include "neon/kernel_profile.h"
 #include "sprint_01_contract_placeholders.h"
 
 namespace {
@@ -341,6 +342,37 @@ int main() {
                  "result should surface metal queue label");
     ok &= Expect(qwen->SupportsMetalBackend(),
                  "qwen should declare metal support");
+  }
+
+  {
+    us4::HardwareProbeResult neonProbe = MakeProbe();
+    neonProbe.hasNeon = true;
+
+    const us4::Tensor fp16Lhs({8, 16}, us4::DType::kFloat16,
+                              us4::DeviceType::kCpu);
+    const us4::Tensor fp16Rhs({16, 32}, us4::DType::kFloat16,
+                              us4::DeviceType::kCpu);
+    const us4::NeonMatmulProfile matmulProfile =
+        us4::PlanNeonMatmul(neonProbe, fp16Lhs, fp16Rhs);
+    ok &= Expect(matmulProfile.flavor == us4::NeonKernelFlavor::kFp16Lane8,
+                 "neon matmul should pick fp16 lane8 profile on arm64");
+    ok &= Expect(matmulProfile.tileRows == 8U && matmulProfile.tileCols == 8U,
+                 "neon matmul should keep 8x8 tile contract");
+
+    const us4::Tensor query({1, 8, 64}, us4::DType::kFloat32,
+                            us4::DeviceType::kCpu);
+    const us4::Tensor key({1, 8, 64}, us4::DType::kFloat32,
+                          us4::DeviceType::kCpu);
+    const us4::Tensor value({1, 8, 64}, us4::DType::kFloat32,
+                            us4::DeviceType::kCpu);
+    const us4::NeonAttentionProfile attentionProfile =
+        us4::PlanNeonAttention(neonProbe, query, key, value, true);
+    ok &=
+        Expect(attentionProfile.fusesSoftmaxRescale,
+               "neon attention should preserve fused softmax-rescale contract");
+    ok &=
+        Expect(attentionProfile.headDimBlock == 32U,
+               "neon attention should keep 32-wide head blocks when possible");
   }
 
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;

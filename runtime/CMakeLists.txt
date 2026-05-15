@@ -33,6 +33,7 @@ add_library(us4_runtime_core
   moe/expert_pager.cpp
   moe/router.cpp
   neon/neon_attention.cpp
+  neon/kernel_profile.cpp
   neon/neon_matmul.cpp
   telemetry/telemetry_types.cpp
   telemetry/telemetry_sink.cpp
