@@ -1,8 +1,10 @@
 #include "adapters/dense_adapter_base.h"
 
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -13,7 +15,11 @@
 #include "cpu/scalar_attention.h"
 #include "cpu/scalar_matmul.h"
 #include "metal/dense_dispatch.h"
+#include "neon/dequant_int4.h"
+#include "neon/dequant_int8.h"
 #include "neon/kernel_profile.h"
+#include "neon/neon_attention.h"
+#include "neon/neon_matmul.h"
 
 namespace us4 {
 
@@ -102,6 +108,124 @@ std::string ResolveDequantPath(const ModelAsset *asset) {
   default:
     return "none";
   }
+}
+
+struct GroupwiseQuantizedProjection {
+  Tensor tensor;
+  std::vector<float> scales;
+};
+
+std::vector<float> BuildGroupScales(const std::vector<float> &source,
+                                    const std::size_t groupSize,
+                                    const float maxQuantAbs) {
+  const std::size_t groupCount = (source.size() + groupSize - 1U) / groupSize;
+  std::vector<float> scales(groupCount, 1.0F);
+  for (std::size_t groupIndex = 0; groupIndex < groupCount; ++groupIndex) {
+    const std::size_t begin = groupIndex * groupSize;
+    const std::size_t end = std::min(source.size(), begin + groupSize);
+    float maxAbs = 0.0F;
+    for (std::size_t index = begin; index < end; ++index) {
+      maxAbs = std::max(maxAbs, std::fabs(source[index]));
+    }
+    scales[groupIndex] = maxAbs > std::numeric_limits<float>::epsilon()
+                             ? maxAbs / maxQuantAbs
+                             : 1.0F;
+  }
+  return scales;
+}
+
+GroupwiseQuantizedProjection
+QuantizeProjectionInt8(const std::vector<float> &source,
+                       const std::vector<std::size_t> &shape,
+                       const std::size_t groupSize) {
+  GroupwiseQuantizedProjection projection{
+      .tensor = Tensor(shape, DType::kInt8),
+      .scales = BuildGroupScales(source, groupSize, 127.0F),
+  };
+
+  auto *bytes =
+      reinterpret_cast<std::int8_t *>(projection.tensor.MutableData());
+  for (std::size_t index = 0; index < source.size(); ++index) {
+    const std::size_t groupIndex = index / groupSize;
+    const float scale = projection.scales[groupIndex];
+    const float normalized = scale > std::numeric_limits<float>::epsilon()
+                                 ? source[index] / scale
+                                 : 0.0F;
+    const long rounded = std::lround(normalized);
+    bytes[index] =
+        static_cast<std::int8_t>(std::clamp<long>(rounded, -127L, 127L));
+  }
+
+  return projection;
+}
+
+std::uint8_t EncodeSignedNibble(const std::int8_t value) {
+  return static_cast<std::uint8_t>(value < 0 ? value + 16 : value) & 0x0FU;
+}
+
+GroupwiseQuantizedProjection
+QuantizeProjectionInt4(const std::vector<float> &source,
+                       const std::vector<std::size_t> &shape,
+                       const std::size_t groupSize) {
+  GroupwiseQuantizedProjection projection{
+      .tensor = Tensor(shape, DType::kInt4),
+      .scales = BuildGroupScales(source, groupSize, 7.0F),
+  };
+
+  auto *bytes =
+      reinterpret_cast<std::uint8_t *>(projection.tensor.MutableData());
+  std::fill(bytes, bytes + projection.tensor.ByteSize(), 0U);
+  for (std::size_t index = 0; index < source.size(); ++index) {
+    const std::size_t groupIndex = index / groupSize;
+    const float scale = projection.scales[groupIndex];
+    const float normalized = scale > std::numeric_limits<float>::epsilon()
+                                 ? source[index] / scale
+                                 : 0.0F;
+    const long rounded = std::lround(normalized);
+    const std::int8_t clamped =
+        static_cast<std::int8_t>(std::clamp<long>(rounded, -8L, 7L));
+    const std::uint8_t nibble = EncodeSignedNibble(clamped);
+    const std::size_t byteIndex = index / 2U;
+    if (index % 2U == 0U) {
+      bytes[byteIndex] =
+          static_cast<std::uint8_t>((bytes[byteIndex] & 0xF0U) | nibble);
+    } else {
+      bytes[byteIndex] = static_cast<std::uint8_t>((bytes[byteIndex] & 0x0FU) |
+                                                   (nibble << 4U));
+    }
+  }
+
+  return projection;
+}
+
+bool MaterializeProjectionTensor(const std::vector<float> &source,
+                                 const std::vector<std::size_t> &shape,
+                                 const ModelAsset *asset, Tensor &projection,
+                                 std::string *error) {
+  if (asset == nullptr || asset->weightDType == DType::kFloat32 ||
+      asset->weightDType == DType::kFloat16 ||
+      asset->weightDType == DType::kBFloat16) {
+    CopyVectorToTensor(source, projection);
+    return true;
+  }
+
+  constexpr std::size_t kQuantGroupSize = 8U;
+  if (asset->weightDType == DType::kInt8) {
+    GroupwiseQuantizedProjection quantized =
+        QuantizeProjectionInt8(source, shape, kQuantGroupSize);
+    return DequantizeInt8Groups(quantized.tensor, kQuantGroupSize,
+                                quantized.scales, projection, error);
+  }
+  if (asset->weightDType == DType::kInt4) {
+    GroupwiseQuantizedProjection quantized =
+        QuantizeProjectionInt4(source, shape, kQuantGroupSize);
+    return DequantizeInt4Groups(quantized.tensor, source.size(),
+                                kQuantGroupSize, quantized.scales, projection,
+                                error);
+  }
+
+  CopyVectorToTensor(source, projection);
+  return true;
 }
 
 } // namespace
@@ -234,15 +358,31 @@ DenseAdapterBase::Generate(const GenerationRequest &request,
       queryVector[hidden] += static_cast<float>((step + hidden) % 5U) * 0.02F;
     }
     CopyVectorToTensor(queryVector, query);
-    CopyVectorToTensor(
-        BuildOutputProjection(vocabulary, kHiddenSize, activeSeed), projection);
 
     std::string error;
-    if (!ScalarAttention(query, key, value, contextTensor, false, {}, &error)) {
+    const std::vector<float> outputProjection =
+        BuildOutputProjection(vocabulary, kHiddenSize, activeSeed);
+    if (!MaterializeProjectionTensor(outputProjection,
+                                     {kHiddenSize, vocabulary.size()},
+                                     request.asset, projection, &error)) {
+      generatedTokens.push_back("projection-error");
+      break;
+    }
+
+    const bool attentionOk =
+        backendSelection.selected == BackendType::kNeon
+            ? NeonAttention(query, key, value, contextTensor, false, {}, &error)
+            : ScalarAttention(query, key, value, contextTensor, false, {},
+                              &error);
+    if (!attentionOk) {
       generatedTokens.push_back("attention-error");
       break;
     }
-    if (!ScalarMatmul(contextTensor, projection, logits, &error)) {
+    const bool matmulOk =
+        backendSelection.selected == BackendType::kNeon
+            ? NeonMatmul(contextTensor, projection, logits, &error)
+            : ScalarMatmul(contextTensor, projection, logits, &error);
+    if (!matmulOk) {
       generatedTokens.push_back("matmul-error");
       break;
     }
