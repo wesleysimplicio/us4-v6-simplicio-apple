@@ -3,7 +3,10 @@
 namespace us4 {
 
 RuntimeContext::RuntimeContext(HardwareProbeResult probe_result)
-    : hardware_(std::move(probe_result)), mode_(hardware_.recommendedMode) {}
+    : hardware_(std::move(probe_result)),
+      mode_(hardware_.recommendedMode),
+      metalQueue_(hardware_),
+      mlxBridge_(hardware_) {}
 
 const HardwareProbeResult& RuntimeContext::hardware() const {
   return hardware_;
@@ -18,6 +21,16 @@ BackendType RuntimeContext::backend() const {
 }
 
 UnifiedAllocator& RuntimeContext::allocator() { return allocator_; }
+
+const UnifiedAllocator& RuntimeContext::allocator() const { return allocator_; }
+
+MetalCommandQueue& RuntimeContext::metalQueue() { return metalQueue_; }
+
+const MetalCommandQueue& RuntimeContext::metalQueue() const { return metalQueue_; }
+
+MlxBridge& RuntimeContext::mlxBridge() { return mlxBridge_; }
+
+const MlxBridge& RuntimeContext::mlxBridge() const { return mlxBridge_; }
 
 KvPager& RuntimeContext::kvPager() { return kvPager_; }
 

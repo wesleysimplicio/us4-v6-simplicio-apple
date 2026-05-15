@@ -14,6 +14,9 @@
 #include "kv/kv_pager.h"
 #include "kv/prefix_cache.h"
 #include "kv/summarizer.h"
+#include "memory/unified_allocator.h"
+#include "metal/command_queue.h"
+#include "mlx/mlx_bridge.h"
 #include "moe/expert_pager.h"
 #include "moe/router.h"
 #include "sprint_01_contract_placeholders.h"
@@ -110,6 +113,27 @@ int main() {
   }
 
   {
+    us4::UnifiedAllocator allocator;
+    allocator.Allocate(32, false);
+    const auto shared = allocator.Allocate(128, true);
+    ok &= Expect(allocator.SharedAllocationCount() == 1U, "allocator should count unified-shared allocations");
+    ok &= Expect(shared->visibility == us4::AllocationVisibility::kUnifiedShared,
+                 "shared allocation should be tagged unified-shared");
+
+    us4::HardwareProbeResult probe = MakeProbe();
+    probe.hasMetal = true;
+    probe.hasMlx = true;
+    us4::RuntimeContext context(probe);
+    ok &= Expect(context.metalQueue().Available(), "metal queue should be available on metal probe");
+    ok &= Expect(context.mlxBridge().Available(), "mlx bridge should be available on mlx probe");
+    ok &= Expect(context.metalQueue().Dispatch(us4::MetalKernelKind::kSoftmax, 2, 64, shared),
+                 "metal queue should record dispatch contract");
+    ok &= Expect(context.metalQueue().DispatchCount() == 1U, "metal queue should count dispatches");
+    ok &= Expect(context.mlxBridge().BuildDensePlan("llama", 32, shared), "mlx bridge should build dense plan");
+    ok &= Expect(context.mlxBridge().EvaluateLastPlan(), "mlx bridge should evaluate last plan");
+  }
+
+  {
     us4::PrefixCache cache;
     cache.Retain("hello");
     cache.Retain("hello");
@@ -148,8 +172,10 @@ int main() {
 
   {
     const us4::IUS4V6Adapter* qwen = us4::FindAdapterByModel("QWEN-0.5B");
+    const us4::IUS4V6Adapter* llama = us4::FindAdapterByModel("llama-3.1-8b");
     const us4::IUS4V6Adapter* ternary = us4::FindAdapterByModel("pt-bitnet-ternary-2b");
     ok &= Expect(qwen != nullptr, "registry should find qwen by model");
+    ok &= Expect(llama != nullptr, "registry should find llama by model");
     ok &= Expect(ternary != nullptr, "registry should find ternary by exact model");
     ok &= Expect(ternary != nullptr && ternary->Family() == "ternary", "registry should not misroute ternary to bitnet");
 
@@ -165,6 +191,23 @@ int main() {
     ok &= Expect(result.modelName == "qwen-0.5b-fixture", "generation should surface manifest model name");
     ok &= Expect(result.backendReason == "requested-backend-unavailable", "generation should expose fallback reason");
     ok &= Expect(result.fellBack, "generation should mark backend fallback");
+    ok &= Expect(result.sharedAllocations == 0U, "scalar fallback should not record shared allocations");
+    ok &= Expect(result.metalDispatches == 0U, "scalar fallback should not record metal dispatches");
+
+    us4::HardwareProbeResult appleProbe = MakeProbe();
+    appleProbe.hasMetal = true;
+    appleProbe.hasMlx = true;
+    us4::RuntimeContext acceleratedContext(appleProbe);
+    const us4::GenerationResult llamaResult =
+        llama->Generate({.prompt = "metal path", .maxTokens = 4, .requestedBackend = us4::BackendType::kMetal},
+                        acceleratedContext);
+    ok &= Expect(llamaResult.backend == "metal", "llama should keep metal backend when available");
+    ok &= Expect(acceleratedContext.metalQueue().DispatchCount() == 1U,
+                 "llama generation should touch the metal scaffold");
+    ok &= Expect(acceleratedContext.allocator().SharedAllocationCount() == 1U,
+                 "metal scaffold should allocate unified-shared memory");
+    ok &= Expect(llamaResult.sharedAllocations == 1U, "result should surface shared allocation count");
+    ok &= Expect(llamaResult.metalDispatches == 1U, "result should surface metal dispatch count");
   }
 
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;

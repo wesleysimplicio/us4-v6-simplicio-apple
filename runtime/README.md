@@ -15,6 +15,10 @@ ahead of us.
   runtime context, and backend selection
 - `adapters/` contains a native registry plus scaffold adapters for Qwen,
   Gemma, BitNet, ternary, Llama, DeepSeek MoE, and Kimi MoE
+- `metal/` now contains a cross-platform command queue skeleton used by native
+  contracts
+- `mlx/` now contains a cross-platform bridge skeleton used by native
+  contracts
 - `kv/` contains small `KvPager` and `PrefixCache` foundations used by unit
   coverage
 - `moe/` contains small `Router` and `ExpertPager` foundations used by MoE
@@ -36,6 +40,8 @@ ahead of us.
 - backend selection and fallback are explicit in CLI output
 - the backend contract already accepts `scalar`, `neon`, `mlx`, `metal`, and
   `ane`, with automatic fallback when a requested path is unavailable
+- `RuntimeContext` now exposes acceleration services for Metal and MLX even
+  before the real Apple-only backend code lands
 - the native registry already exposes dense, ternary, llama, and MoE-family
   adapters, but they still execute through the shared scaffold path today
 - hardware probe and mode selection contracts compile and run

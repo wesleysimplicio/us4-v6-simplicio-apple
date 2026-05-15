@@ -14,6 +14,7 @@ set(us4_runtime_contract_test_sources
   model_asset_contract_test.cpp
   kv_contract_test.cpp
   moe_contract_test.cpp
+  runtime_acceleration_contract_test.cpp
   tensor_contract_test.cpp
   scalar_kernels_contract_test.cpp
   adapter_generation_contract_test.cpp

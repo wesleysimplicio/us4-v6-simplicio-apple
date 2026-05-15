@@ -162,6 +162,10 @@ test.describe('Native CLI sprint 02 contract', () => {
       backend: 'scalar',
       backend_reason: 'requested-backend-unavailable',
       fallback: true,
+      shared_allocations: 0,
+      metal_dispatches: 0,
+      mlx_plan_built: false,
+      mlx_evaluated: false,
       asset_path: expect.any(String),
       prompt_tokens: ['hi'],
       generated_tokens: expect.any(Array),
@@ -246,6 +250,8 @@ test.describe('Native CLI sprint 02 contract', () => {
       backend: 'scalar',
       backend_reason: 'requested',
       fallback: false,
+      shared_allocations: 0,
+      metal_dispatches: 0,
     });
   });
 
@@ -273,6 +279,8 @@ test.describe('Native CLI sprint 02 contract', () => {
       model: 'qwen-0.5b-fixture',
       backend_reason: 'auto',
       fallback: false,
+      shared_allocations: 0,
+      metal_dispatches: 0,
     });
   });
 
@@ -328,6 +336,8 @@ test.describe('Native CLI sprint 02 contract', () => {
       backend: 'scalar',
       backend_reason: 'requested-backend-unavailable',
       fallback: true,
+      shared_allocations: 0,
+      metal_dispatches: 0,
     });
   });
 
@@ -353,6 +363,8 @@ test.describe('Native CLI sprint 02 contract', () => {
     expect(JSON.parse(stdout)).toMatchObject({
       family: 'deepseek',
       backend: 'scalar',
+      shared_allocations: 0,
+      metal_dispatches: 0,
       generated_tokens: expect.any(Array),
     });
   });

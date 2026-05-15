@@ -37,6 +37,10 @@ struct GenerationResult {
   std::vector<std::string> promptTokens;
   std::vector<std::string> generatedTokens;
   std::string text;
+  std::size_t sharedAllocations = 0;
+  std::size_t metalDispatches = 0;
+  bool mlxPlanBuilt = false;
+  bool mlxEvaluated = false;
   RuntimeMode mode = RuntimeMode::kNano;
   bool fellBack = false;
 };

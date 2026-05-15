@@ -49,6 +49,37 @@ void CopyVectorToTensor(const std::vector<float>& source, Tensor& tensor) {
   }
 }
 
+void RecordBackendScaffold(const IUS4V6Adapter& adapter,
+                           const BackendSelection& backendSelection,
+                           const GenerationRequest& request,
+                           const RuntimeContext& context) {
+  RuntimeContext& mutableContext = const_cast<RuntimeContext&>(context);
+  const bool needsSharedAllocation =
+      backendSelection.selected == BackendType::kMetal || backendSelection.selected == BackendType::kMlx;
+  const auto allocation =
+      mutableContext.allocator().Allocate(std::max<std::size_t>(request.maxTokens, 1U) * kHiddenSize * sizeof(float),
+                                          needsSharedAllocation);
+
+  switch (backendSelection.selected) {
+    case BackendType::kMetal:
+      (void)mutableContext.metalQueue().Dispatch(MetalKernelKind::kMatmul,
+                                                 std::max<std::size_t>(request.maxTokens, 1U),
+                                                 kHiddenSize,
+                                                 allocation);
+      break;
+    case BackendType::kMlx:
+      if (mutableContext.mlxBridge().BuildDensePlan(adapter.Family(), std::max<std::size_t>(request.maxTokens, 1U),
+                                                    allocation)) {
+        (void)mutableContext.mlxBridge().EvaluateLastPlan();
+      }
+      break;
+    case BackendType::kScalarCpu:
+    case BackendType::kNeon:
+    case BackendType::kAne:
+      break;
+  }
+}
+
 }  // namespace
 
 DenseAdapterBase::DenseAdapterBase(std::string family, std::string modelName)
@@ -114,6 +145,7 @@ std::vector<std::string> DenseAdapterBase::Tokenize(const std::string_view text)
 GenerationResult DenseAdapterBase::Generate(const GenerationRequest& request, const RuntimeContext& context) const {
   const BackendSelection backendSelection =
       SelectBackend(context.hardware(), context.mode(), *this, request.requestedBackend);
+  RecordBackendScaffold(*this, backendSelection, request, context);
   const std::vector<std::string> vocabulary =
       (request.asset != nullptr && !request.asset->vocabulary.empty()) ? request.asset->vocabulary : Vocabulary();
   const std::uint32_t activeSeed = (request.asset != nullptr && request.asset->seed != 0U) ? request.asset->seed : Seed();
@@ -199,6 +231,10 @@ GenerationResult DenseAdapterBase::Generate(const GenerationRequest& request, co
   result.promptTokens = std::move(promptTokens);
   result.generatedTokens = generatedTokens;
   result.text = JoinTokens(generatedTokens);
+  result.sharedAllocations = context.allocator().SharedAllocationCount();
+  result.metalDispatches = context.metalQueue().DispatchCount();
+  result.mlxPlanBuilt = context.mlxBridge().LastPlan().has_value();
+  result.mlxEvaluated = context.mlxBridge().LastEvaluationSucceeded();
   result.mode = context.mode();
   result.fellBack = backendSelection.fellBack;
   return result;

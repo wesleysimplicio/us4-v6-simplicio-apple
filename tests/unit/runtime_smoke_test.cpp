@@ -12,6 +12,8 @@
 #include "kv/ssd_cold_store.h"
 #include "kv/summarizer.h"
 #include "memory/unified_allocator.h"
+#include "metal/command_queue.h"
+#include "mlx/mlx_bridge.h"
 #include "moe/expert_pager.h"
 #include "moe/router.h"
 #include "core/runtime_context.h"
@@ -64,6 +66,22 @@ int main() {
   us4::UnifiedAllocator allocator;
   const auto allocation = allocator.Allocate(128, false);
   ok &= Expect(allocation->bytes.size() == 128, "unified allocator should reserve bytes");
+  const auto sharedAllocation = allocator.Allocate(256, true);
+  ok &= Expect(sharedAllocation->visibility == us4::AllocationVisibility::kUnifiedShared,
+               "unified allocator should tag shared allocations");
+  ok &= Expect(allocator.SharedAllocationCount() == 1, "unified allocator should count shared allocations");
+
+  ok &= Expect(context.metalQueue().Available() == probe.hasMetal, "metal queue should mirror probe availability");
+  ok &= Expect(context.mlxBridge().Available() == probe.hasMlx, "mlx bridge should mirror probe availability");
+  if (probe.hasMetal) {
+    ok &= Expect(context.metalQueue().Dispatch(us4::MetalKernelKind::kMatmul, 2, 32, sharedAllocation),
+                 "metal queue should record dispatches when available");
+  }
+  if (probe.hasMlx) {
+    ok &= Expect(context.mlxBridge().BuildDensePlan("qwen", 16, sharedAllocation),
+                 "mlx bridge should build plan when available");
+    ok &= Expect(context.mlxBridge().EvaluateLastPlan(), "mlx bridge should evaluate built plan");
+  }
 
   us4::KvPager pager(1);
   pager.Append("prompt", {1.0F, 2.0F, 3.0F});

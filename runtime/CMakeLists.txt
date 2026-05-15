@@ -23,6 +23,8 @@ add_library(us4_runtime_core
   kv/ssd_cold_store.cpp
   kv/summarizer.cpp
   memory/unified_allocator.cpp
+  metal/command_queue.cpp
+  mlx/mlx_bridge.cpp
   moe/expert_pager.cpp
   moe/router.cpp
   neon/neon_attention.cpp

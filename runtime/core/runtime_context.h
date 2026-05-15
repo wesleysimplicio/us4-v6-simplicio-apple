@@ -7,6 +7,8 @@
 #include "kv/ssd_cold_store.h"
 #include "kv/summarizer.h"
 #include "memory/unified_allocator.h"
+#include "metal/command_queue.h"
+#include "mlx/mlx_bridge.h"
 #include "moe/expert_pager.h"
 #include "moe/router.h"
 
@@ -21,6 +23,11 @@ class RuntimeContext {
   RuntimeMode mode() const;
   BackendType backend() const;
   UnifiedAllocator& allocator();
+  const UnifiedAllocator& allocator() const;
+  MetalCommandQueue& metalQueue();
+  const MetalCommandQueue& metalQueue() const;
+  MlxBridge& mlxBridge();
+  const MlxBridge& mlxBridge() const;
   KvPager& kvPager();
   PrefixCache& prefixCache();
   SsdColdStore& coldStore();
@@ -35,6 +42,8 @@ class RuntimeContext {
   RuntimeMode mode_ = RuntimeMode::kNano;
   BackendType backend_ = BackendType::kScalarCpu;
   UnifiedAllocator allocator_;
+  MetalCommandQueue metalQueue_;
+  MlxBridge mlxBridge_;
   KvPager kvPager_;
   PrefixCache prefixCache_;
   SsdColdStore coldStore_;
