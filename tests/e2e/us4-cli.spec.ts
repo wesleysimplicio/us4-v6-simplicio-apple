@@ -773,4 +773,122 @@ test.describe("Native CLI sprint 02 contract", () => {
       generated_tokens : expect.any(Array),
     });
   });
+
+  test(
+      "bitnet gguf loader keeps low-bit telemetry visible without explicit model",
+      async ({}, testInfo) => {
+        const ggufPath = path.join(
+            repoRoot,
+            "tests",
+            "fixtures",
+            "models",
+            "bitnet-b1.58-2b",
+            "toy-bitnet.gguf",
+        );
+        const {stdout, stderr} = await execFileAsync(
+            nativeCliPath!,
+            [
+              "run",
+              "--model-path",
+              ggufPath,
+              "--prompt",
+              "",
+              "--max-tokens",
+              "4",
+              "--json",
+            ],
+            {
+              cwd : repoRoot,
+              env : {
+                ...process.env,
+                NO_COLOR : "1",
+              },
+            },
+        );
+
+        await testInfo.attach("stdout-native-bitnet-gguf", {
+          body : stdout.trim() || "(empty)",
+          contentType : "text/plain",
+        });
+        await testInfo.attach("stderr-native-bitnet-gguf", {
+          body : stderr.trim() || "(empty)",
+          contentType : "text/plain",
+        });
+
+        expect(stderr.trim()).toBe("");
+        const payload = JSON.parse(stdout) as Record<string, unknown>;
+        expect(payload).toMatchObject({
+          family : "bitnet",
+          model : "toy-bitnet",
+          asset_format : "gguf",
+          asset_path : expect.stringContaining("toy-bitnet.gguf"),
+          prompt_tokens : [ "hi" ],
+          weight_dtype : "int8",
+          dequant_path : "groupwise-int8",
+          generated_tokens : expect.any(Array),
+        });
+        expect((payload.generated_tokens as unknown[]).length)
+            .toBeGreaterThanOrEqual(
+                4,
+            );
+      });
+
+  test(
+      "ternary safetensors loader keeps low-bit telemetry visible without explicit model",
+      async ({}, testInfo) => {
+        const tensorPath = path.join(
+            repoRoot,
+            "tests",
+            "fixtures",
+            "models",
+            "pt-bitnet-ternary-2b",
+            "toy-ternary.safetensors",
+        );
+        const {stdout, stderr} = await execFileAsync(
+            nativeCliPath!,
+            [
+              "run",
+              "--model-path",
+              tensorPath,
+              "--prompt",
+              "",
+              "--max-tokens",
+              "4",
+              "--json",
+            ],
+            {
+              cwd : repoRoot,
+              env : {
+                ...process.env,
+                NO_COLOR : "1",
+              },
+            },
+        );
+
+        await testInfo.attach("stdout-native-ternary-safetensors", {
+          body : stdout.trim() || "(empty)",
+          contentType : "text/plain",
+        });
+        await testInfo.attach("stderr-native-ternary-safetensors", {
+          body : stderr.trim() || "(empty)",
+          contentType : "text/plain",
+        });
+
+        expect(stderr.trim()).toBe("");
+        const payload = JSON.parse(stdout) as Record<string, unknown>;
+        expect(payload).toMatchObject({
+          family : "ternary",
+          model : "toy-ternary",
+          asset_format : "safetensors",
+          asset_path : expect.stringContaining("toy-ternary.safetensors"),
+          prompt_tokens : [ "hi" ],
+          weight_dtype : "int4",
+          dequant_path : "groupwise-int4",
+          generated_tokens : expect.any(Array),
+        });
+        expect((payload.generated_tokens as unknown[]).length)
+            .toBeGreaterThanOrEqual(
+                4,
+            );
+      });
 });

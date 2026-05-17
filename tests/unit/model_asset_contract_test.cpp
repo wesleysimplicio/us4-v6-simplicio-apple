@@ -26,6 +26,7 @@ struct FileDetectionExpectation {
   us4::ModelFormat format;
   const char *family;
   const char *modelName;
+  us4::DType weightDType;
 };
 
 std::filesystem::path FixtureRoot() {
@@ -79,19 +80,23 @@ TEST(ModelAssetContractTest, DetectsSupportedBinaryModelFormatsAcrossFamilies) {
   constexpr std::array<FileDetectionExpectation, 7> kFileDetectionExpectations =
       {{
           {"qwen-0.5b", "toy-qwen.gguf", us4::ModelFormat::kGguf, "qwen",
-           "toy-qwen"},
+           "toy-qwen", us4::DType::kFloat16},
           {"gemma-2b-it", "toy-gemma.safetensors",
-           us4::ModelFormat::kSafetensors, "gemma", "toy-gemma"},
+           us4::ModelFormat::kSafetensors, "gemma", "toy-gemma",
+           us4::DType::kFloat16},
           {"llama-3.1-8b", "toy-llama.gguf", us4::ModelFormat::kGguf, "llama",
-           "toy-llama"},
+           "toy-llama", us4::DType::kFloat16},
           {"bitnet-b1.58-2b", "toy-bitnet.gguf", us4::ModelFormat::kGguf,
-           "bitnet", "toy-bitnet"},
+           "bitnet", "toy-bitnet", us4::DType::kInt8},
           {"pt-bitnet-ternary-2b", "toy-ternary.safetensors",
-           us4::ModelFormat::kSafetensors, "ternary", "toy-ternary"},
+           us4::ModelFormat::kSafetensors, "ternary", "toy-ternary",
+           us4::DType::kInt4},
           {"deepseek-v2-lite", "toy-deepseek.safetensors",
-           us4::ModelFormat::kSafetensors, "deepseek", "toy-deepseek"},
+           us4::ModelFormat::kSafetensors, "deepseek", "toy-deepseek",
+           us4::DType::kBFloat16},
           {"kimi-k2-instruct", "toy-kimi.safetensors",
-           us4::ModelFormat::kSafetensors, "kimi", "toy-kimi"},
+           us4::ModelFormat::kSafetensors, "kimi", "toy-kimi",
+           us4::DType::kBFloat16},
       }};
 
   for (const FileDetectionExpectation &expectation :
@@ -107,7 +112,7 @@ TEST(ModelAssetContractTest, DetectsSupportedBinaryModelFormatsAcrossFamilies) {
     EXPECT_EQ(asset.format, expectation.format);
     EXPECT_EQ(asset.family, expectation.family);
     EXPECT_EQ(asset.modelName, expectation.modelName);
-    EXPECT_EQ(asset.weightDType, us4::DType::kFloat16);
+    EXPECT_EQ(asset.weightDType, expectation.weightDType);
     EXPECT_EQ(asset.sourcePath, inputPath);
   }
 }
@@ -159,4 +164,25 @@ TEST(ModelAssetContractTest,
   EXPECT_EQ(asset.metadata.at("kv_heads"), "1");
   EXPECT_EQ(asset.metadata.at("tokenizer_json"),
             (FixtureRoot() / "llama-3.1-8b" / "tokenizer.json").string());
+}
+
+TEST(ModelAssetContractTest,
+     LowBitBinaryAssetsInheritSiblingManifestMetadataWhenAvailable) {
+  const std::array<std::filesystem::path, 2> kPaths = {
+      FixtureRoot() / "bitnet-b1.58-2b" / "toy-bitnet.gguf",
+      FixtureRoot() / "pt-bitnet-ternary-2b" / "toy-ternary.safetensors",
+  };
+
+  for (const std::filesystem::path &inputPath : kPaths) {
+    SCOPED_TRACE(inputPath.string());
+
+    us4::ModelAsset asset;
+    std::string error;
+    ASSERT_TRUE(us4::LoadModelAsset(inputPath, asset, &error)) << error;
+
+    EXPECT_FALSE(asset.vocabulary.empty());
+    EXPECT_EQ(asset.defaultPromptToken, "hi");
+    EXPECT_TRUE(asset.metadata.contains("weight_dtype"));
+    EXPECT_TRUE(asset.metadata.contains("tokenizer_json"));
+  }
 }
