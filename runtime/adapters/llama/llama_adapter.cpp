@@ -12,60 +12,17 @@
 
 #include "core/backend_selector.h"
 #include "core/gqa_attention.h"
-#include "core/model_asset.h"
 #include "core/rope.h"
 #include "core/tensor.h"
-#include "cpu/scalar_matmul.h"
-#include "neon/kernel_profile.h"
 #include "neon/neon_matmul.h"
 
 namespace us4 {
 
 namespace {
 
-void CopyVectorToTensor(const std::vector<float> &source, Tensor &tensor) {
-  float *target = tensor.MutableDataAsFloat32();
-  for (std::size_t index = 0; index < source.size(); ++index) {
-    target[index] = source[index];
-  }
-}
-
 std::vector<float> ReadTensorRow(const Tensor &tensor) {
   const float *source = tensor.DataAsFloat32();
   return {source, source + tensor.ElementCount()};
-}
-
-std::string ResolveDequantPath(const ModelAsset *asset) {
-  if (asset == nullptr) {
-    return "none";
-  }
-  switch (asset->weightDType) {
-  case DType::kInt8:
-    return "groupwise-int8";
-  case DType::kInt4:
-    return "groupwise-int4";
-  default:
-    return "none";
-  }
-}
-
-Tensor BuildProjectionTensor(const std::vector<float> &values,
-                             const std::vector<std::size_t> &shape,
-                             const ModelAsset *asset) {
-  const DType dtype = asset == nullptr ? DType::kFloat32 : asset->weightDType;
-  if (dtype == DType::kFloat16 || dtype == DType::kBFloat16) {
-    Tensor projection(shape, dtype);
-    std::uint16_t *data = projection.MutableDataAsUInt16();
-    for (std::size_t index = 0; index < values.size(); ++index) {
-      data[index] = dtype == DType::kFloat16 ? EncodeFloat16(values[index])
-                                             : EncodeBFloat16(values[index]);
-    }
-    return projection;
-  }
-
-  Tensor projection(shape, DType::kFloat32);
-  CopyVectorToTensor(values, projection);
-  return projection;
 }
 
 void DecorateLlamaResult(GenerationResult &result) {
@@ -91,8 +48,8 @@ LlamaAdapter::BuildQueryRow(const std::size_t tokenId, const std::uint32_t seed,
                             const std::size_t position,
                             const LlamaConfig &config) const {
   Tensor row({1, config.hiddenSize}, DType::kFloat32);
-  CopyVectorToTensor(BuildTokenEmbedding(tokenId, config.hiddenSize, seed),
-                     row);
+  CopyVectorToTensorValues(
+      BuildTokenEmbedding(tokenId, config.hiddenSize, seed), row);
   ApplyRopeInPlace(row, position, config.ropeTheta, config.ropeScaling,
                    config.ropeScale);
   return ReadTensorRow(row);
@@ -104,7 +61,8 @@ std::vector<float> LlamaAdapter::BuildKeyRow(const std::size_t tokenId,
                                              const LlamaConfig &config) const {
   const std::size_t kvWidth = config.kvHeads * config.headDim;
   Tensor row({1, kvWidth}, DType::kFloat32);
-  CopyVectorToTensor(BuildTokenEmbedding(tokenId, kvWidth, seed + 11U), row);
+  CopyVectorToTensorValues(BuildTokenEmbedding(tokenId, kvWidth, seed + 11U),
+                           row);
   ApplyRopeInPlace(row, position, config.ropeTheta, config.ropeScaling,
                    config.ropeScale);
   return ReadTensorRow(row);
@@ -212,9 +170,9 @@ GenerationResult LlamaAdapter::Generate(const GenerationRequest &request,
     Tensor contextTensor({1, config.hiddenSize}, DType::kFloat32);
     Tensor logits({1, vocabulary.size()}, DType::kFloat32);
 
-    CopyVectorToTensor(keyBuffer, key);
-    CopyVectorToTensor(valueBuffer, value);
-    CopyVectorToTensor(
+    CopyVectorToTensorValues(keyBuffer, key);
+    CopyVectorToTensorValues(valueBuffer, value);
+    CopyVectorToTensorValues(
         BuildQueryRow(tokenIds.back(), activeSeed, sequenceLength - 1U, config),
         query);
 
@@ -228,13 +186,15 @@ GenerationResult LlamaAdapter::Generate(const GenerationRequest &request,
     const ModelAsset *projectionAsset =
         backendSelection.selected == BackendType::kNeon ? request.asset
                                                         : nullptr;
-    const Tensor projection = BuildProjectionTensor(
-        BuildOutputProjection(vocabulary, config.hiddenSize, activeSeed),
-        {config.hiddenSize, vocabulary.size()}, projectionAsset);
-    const bool matmulOk =
-        backendSelection.selected == BackendType::kNeon
-            ? NeonMatmul(contextTensor, projection, logits, &error)
-            : ScalarMatmul(contextTensor, projection, logits, &error);
+    Tensor projection({config.hiddenSize, vocabulary.size()}, DType::kFloat32);
+    if (!MaterializeProjectionForAsset(
+            BuildOutputProjection(vocabulary, config.hiddenSize, activeSeed),
+            {config.hiddenSize, vocabulary.size()}, projectionAsset, projection,
+            &error)) {
+      generatedTokens.push_back("projection-error");
+      break;
+    }
+    const bool matmulOk = NeonMatmul(contextTensor, projection, logits, &error);
     if (!matmulOk) {
       generatedTokens.push_back("matmul-error");
       break;
@@ -265,60 +225,10 @@ GenerationResult LlamaAdapter::Generate(const GenerationRequest &request,
                        nextValueRow.end());
   }
 
-  GenerationResult result;
-  result.family = (request.asset != nullptr && !request.asset->family.empty())
-                      ? request.asset->family
-                      : "llama";
-  result.modelName =
-      (request.asset != nullptr && !request.asset->modelName.empty())
-          ? request.asset->modelName
-          : std::string(ModelName());
-  result.assetFormat = request.asset != nullptr
-                           ? std::string(ToString(request.asset->format))
-                           : "builtin";
-  result.assetPath =
-      request.asset != nullptr ? request.asset->sourcePath.string() : "";
-  result.backend = std::string(ToString(backendSelection.selected));
-  result.backendReason = std::string(backendSelection.reason);
-  result.promptTokens = std::move(promptTokens);
-  result.generatedTokens = generatedTokens;
-  result.text = JoinTokens(generatedTokens);
-  result.sharedAllocations = context.allocator().SharedAllocationCount();
-  result.metalDispatches = context.metalQueue().DispatchCount();
-  result.mlxOperationCount =
-      context.mlxBridge().LastPlan().has_value()
-          ? context.mlxBridge().LastPlan()->operations.size()
-          : 0U;
-  result.kvCacheHit = kvCacheHit;
-  result.kvRestoredFromColdStore = kvRestoredFromColdStore;
-  result.kvPageCount = mutableContext.kvPager().PageCount();
-  result.kvHotPages = mutableContext.kvPager().HotPageCount();
-  result.kvWarmPages = mutableContext.kvPager().WarmPageCount();
-  result.kvColdPages = mutableContext.kvPager().ColdPageCount();
-  result.kvSummaryRows = kvSummaryRows;
-  result.prefixCacheEntries = mutableContext.prefixCache().EntryCount();
-  result.mlxPlanBuilt = context.mlxBridge().LastPlan().has_value();
-  result.mlxEvaluated = context.mlxBridge().LastEvaluationSucceeded();
-  result.weightDType = request.asset != nullptr
-                           ? std::string(ToString(request.asset->weightDType))
-                           : "fp32";
-  result.dequantPath = ResolveDequantPath(request.asset);
-  result.neonKernelFlavor = "none";
-  if (backendSelection.selected == BackendType::kNeon) {
-    const DType planDType =
-        request.asset != nullptr ? request.asset->weightDType : DType::kFloat32;
-    const Tensor lhs(
-        {std::max<std::size_t>(request.maxTokens, 1U), config.hiddenSize},
-        planDType, DeviceType::kCpu);
-    const Tensor rhs({config.hiddenSize, config.hiddenSize}, planDType,
-                     DeviceType::kCpu);
-    result.neonKernelFlavor = std::string(
-        ToString(PlanNeonMatmul(context.hardware(), lhs, rhs).flavor));
-  }
-  result.metalDevice = context.metalQueue().Device().deviceName;
-  result.metalQueueLabel = context.metalQueue().Device().queueLabel;
-  result.mode = context.mode();
-  result.fellBack = backendSelection.fellBack;
+  GenerationResult result = FinalizeGenerationResult(
+      request, context, backendSelection, std::move(promptTokens),
+      std::move(generatedTokens), kvCacheHit, kvRestoredFromColdStore,
+      kvSummaryRows, config.hiddenSize);
   DecorateLlamaResult(result);
   return result;
 }

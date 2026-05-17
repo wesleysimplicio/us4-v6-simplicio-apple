@@ -6,6 +6,14 @@
 - 2 weeks each
 - Sprint 01 starts from planning/bootstrap and creates the runtime skeleton
 
+## Current planning inventory
+
+- 12 sprint directories exist under `.specs/sprints/`
+- 9 authored task files currently exist on disk
+- All authored `*.task.md` files still live in `sprint-01`
+- Sprints 02-12 already have scope/theme/timeline, but still need finer task
+  decomposition as implementation continues
+
 ## Quality gates by maturity
 
 | Phase | Required gates |

@@ -5,7 +5,9 @@
 #include <string_view>
 #include <vector>
 
+#include "core/backend_selector.h"
 #include "core/ius4v6_adapter.h"
+#include "core/tensor.h"
 
 namespace us4 {
 
@@ -46,6 +48,14 @@ protected:
   std::string JoinTokens(const std::vector<std::string> &tokens) const;
   std::string BuildPromptCacheKeyForFamily(
       std::uint32_t seed, const std::vector<std::string> &promptTokens) const;
+  void CopyVectorToTensorValues(const std::vector<float> &source,
+                                Tensor &tensor) const;
+  bool MaterializeProjectionForAsset(const std::vector<float> &source,
+                                     const std::vector<std::size_t> &shape,
+                                     const ModelAsset *asset,
+                                     Tensor &projection,
+                                     std::string *error) const;
+  std::string ResolveDequantPathForAsset(const ModelAsset *asset) const;
   bool TryRestorePromptKvFromColdStore(RuntimeContext &context,
                                        const std::string &prefixKey,
                                        std::size_t rowWidth,
@@ -57,6 +67,13 @@ protected:
                                    std::vector<float> &keyBuffer,
                                    std::vector<float> &valueBuffer,
                                    std::size_t rowWidth) const;
+  GenerationResult FinalizeGenerationResult(
+      const GenerationRequest &request, const RuntimeContext &context,
+      const BackendSelection &backendSelection,
+      std::vector<std::string> promptTokens,
+      std::vector<std::string> generatedTokens, bool kvCacheHit,
+      bool kvRestoredFromColdStore, std::size_t kvSummaryRows,
+      std::size_t planHiddenSize) const;
 
 private:
   std::string family_;

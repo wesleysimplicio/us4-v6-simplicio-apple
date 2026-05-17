@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [[ \"$CLAUDE_BASH_COMMAND\" == *\"git commit\"* ]]; then 'C:\\Users\\wesley.simplicio\\Pictures\\m\\us4-v6-simplicio-windows\\.codex\\hooks\\pre-commit.sh'; fi"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'C:\\Users\\wesley.simplicio\\Pictures\\m\\us4-v6-simplicio-windows\\.codex\\hooks\\post-edit.sh' \"$CLAUDE_FILE_PATH\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'C:\\Users\\wesley.simplicio\\Pictures\\m\\us4-v6-simplicio-windows\\.codex\\hooks\\session-start-skills.sh'"
+          }
+        ]
+      }
+    ]
+  }
+}

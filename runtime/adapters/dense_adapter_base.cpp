@@ -462,60 +462,10 @@ DenseAdapterBase::Generate(const GenerationRequest &request,
     }
   }
 
-  GenerationResult result;
-  result.family = (request.asset != nullptr && !request.asset->family.empty())
-                      ? request.asset->family
-                      : family_;
-  result.modelName =
-      (request.asset != nullptr && !request.asset->modelName.empty())
-          ? request.asset->modelName
-          : model_name_;
-  result.assetFormat = request.asset != nullptr
-                           ? std::string(ToString(request.asset->format))
-                           : "builtin";
-  result.assetPath =
-      request.asset != nullptr ? request.asset->sourcePath.string() : "";
-  result.backend = std::string(ToString(backendSelection.selected));
-  result.backendReason = std::string(backendSelection.reason);
-  result.promptTokens = std::move(promptTokens);
-  result.generatedTokens = generatedTokens;
-  result.text = JoinTokens(generatedTokens);
-  result.sharedAllocations = context.allocator().SharedAllocationCount();
-  result.metalDispatches = context.metalQueue().DispatchCount();
-  result.mlxOperationCount =
-      context.mlxBridge().LastPlan().has_value()
-          ? context.mlxBridge().LastPlan()->operations.size()
-          : 0U;
-  result.kvCacheHit = kvCacheHit;
-  result.kvRestoredFromColdStore = kvRestoredFromColdStore;
-  result.kvPageCount = mutableContext.kvPager().PageCount();
-  result.kvHotPages = mutableContext.kvPager().HotPageCount();
-  result.kvWarmPages = mutableContext.kvPager().WarmPageCount();
-  result.kvColdPages = mutableContext.kvPager().ColdPageCount();
-  result.kvSummaryRows = kvSummaryRows;
-  result.prefixCacheEntries = mutableContext.prefixCache().EntryCount();
-  result.mlxPlanBuilt = context.mlxBridge().LastPlan().has_value();
-  result.mlxEvaluated = context.mlxBridge().LastEvaluationSucceeded();
-  result.weightDType = request.asset != nullptr
-                           ? std::string(ToString(request.asset->weightDType))
-                           : "fp32";
-  result.dequantPath = ResolveDequantPath(request.asset);
-  result.neonKernelFlavor = "none";
-  if (backendSelection.selected == BackendType::kNeon) {
-    const DType planDType =
-        request.asset != nullptr ? request.asset->weightDType : DType::kFloat32;
-    const Tensor lhs(
-        {std::max<std::size_t>(request.maxTokens, 1U), kHiddenSize}, planDType,
-        DeviceType::kCpu);
-    const Tensor rhs({kHiddenSize, kHiddenSize}, planDType, DeviceType::kCpu);
-    result.neonKernelFlavor = std::string(
-        ToString(PlanNeonMatmul(context.hardware(), lhs, rhs).flavor));
-  }
-  result.metalDevice = context.metalQueue().Device().deviceName;
-  result.metalQueueLabel = context.metalQueue().Device().queueLabel;
-  result.mode = context.mode();
-  result.fellBack = backendSelection.fellBack;
-  return result;
+  return FinalizeGenerationResult(
+      request, context, backendSelection, std::move(promptTokens),
+      std::move(generatedTokens), kvCacheHit, kvRestoredFromColdStore,
+      kvSummaryRows, kHiddenSize);
 }
 
 std::size_t
@@ -582,6 +532,22 @@ std::string DenseAdapterBase::BuildPromptCacheKeyForFamily(
     const std::uint32_t seed,
     const std::vector<std::string> &promptTokens) const {
   return BuildPromptCacheKey(family_, seed, promptTokens);
+}
+
+void DenseAdapterBase::CopyVectorToTensorValues(
+    const std::vector<float> &source, Tensor &tensor) const {
+  CopyVectorToTensor(source, tensor);
+}
+
+bool DenseAdapterBase::MaterializeProjectionForAsset(
+    const std::vector<float> &source, const std::vector<std::size_t> &shape,
+    const ModelAsset *asset, Tensor &projection, std::string *error) const {
+  return MaterializeProjectionTensor(source, shape, asset, projection, error);
+}
+
+std::string
+DenseAdapterBase::ResolveDequantPathForAsset(const ModelAsset *asset) const {
+  return ResolveDequantPath(asset);
 }
 
 bool DenseAdapterBase::TryRestorePromptKvFromColdStore(
@@ -661,6 +627,72 @@ std::size_t DenseAdapterBase::MaybeCompactPromptKv(
   keyBuffer = std::move(compactedKeys);
   valueBuffer = std::move(compactedValues);
   return summaryInputRows - 1U;
+}
+
+GenerationResult DenseAdapterBase::FinalizeGenerationResult(
+    const GenerationRequest &request, const RuntimeContext &context,
+    const BackendSelection &backendSelection,
+    std::vector<std::string> promptTokens,
+    std::vector<std::string> generatedTokens, const bool kvCacheHit,
+    const bool kvRestoredFromColdStore, const std::size_t kvSummaryRows,
+    const std::size_t planHiddenSize) const {
+  RuntimeContext &mutableContext = const_cast<RuntimeContext &>(context);
+
+  GenerationResult result;
+  result.family = (request.asset != nullptr && !request.asset->family.empty())
+                      ? request.asset->family
+                      : family_;
+  result.modelName =
+      (request.asset != nullptr && !request.asset->modelName.empty())
+          ? request.asset->modelName
+          : model_name_;
+  result.assetFormat = request.asset != nullptr
+                           ? std::string(ToString(request.asset->format))
+                           : "builtin";
+  result.assetPath =
+      request.asset != nullptr ? request.asset->sourcePath.string() : "";
+  result.backend = std::string(ToString(backendSelection.selected));
+  result.backendReason = std::string(backendSelection.reason);
+  result.promptTokens = std::move(promptTokens);
+  result.generatedTokens = std::move(generatedTokens);
+  result.text = JoinTokens(result.generatedTokens);
+  result.sharedAllocations = context.allocator().SharedAllocationCount();
+  result.metalDispatches = context.metalQueue().DispatchCount();
+  result.mlxOperationCount =
+      context.mlxBridge().LastPlan().has_value()
+          ? context.mlxBridge().LastPlan()->operations.size()
+          : 0U;
+  result.kvCacheHit = kvCacheHit;
+  result.kvRestoredFromColdStore = kvRestoredFromColdStore;
+  result.kvPageCount = mutableContext.kvPager().PageCount();
+  result.kvHotPages = mutableContext.kvPager().HotPageCount();
+  result.kvWarmPages = mutableContext.kvPager().WarmPageCount();
+  result.kvColdPages = mutableContext.kvPager().ColdPageCount();
+  result.kvSummaryRows = kvSummaryRows;
+  result.prefixCacheEntries = mutableContext.prefixCache().EntryCount();
+  result.mlxPlanBuilt = context.mlxBridge().LastPlan().has_value();
+  result.mlxEvaluated = context.mlxBridge().LastEvaluationSucceeded();
+  result.weightDType = request.asset != nullptr
+                           ? std::string(ToString(request.asset->weightDType))
+                           : "fp32";
+  result.dequantPath = ResolveDequantPathForAsset(request.asset);
+  result.neonKernelFlavor = "none";
+  if (backendSelection.selected == BackendType::kNeon) {
+    const DType planDType =
+        request.asset != nullptr ? request.asset->weightDType : DType::kFloat32;
+    const Tensor lhs(
+        {std::max<std::size_t>(request.maxTokens, 1U), planHiddenSize},
+        planDType, DeviceType::kCpu);
+    const Tensor rhs({planHiddenSize, planHiddenSize}, planDType,
+                     DeviceType::kCpu);
+    result.neonKernelFlavor = std::string(
+        ToString(PlanNeonMatmul(context.hardware(), lhs, rhs).flavor));
+  }
+  result.metalDevice = context.metalQueue().Device().deviceName;
+  result.metalQueueLabel = context.metalQueue().Device().queueLabel;
+  result.mode = context.mode();
+  result.fellBack = backendSelection.fellBack;
+  return result;
 }
 
 } // namespace us4
