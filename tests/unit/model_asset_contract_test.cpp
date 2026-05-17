@@ -137,3 +137,26 @@ TEST(ModelAssetContractTest, LlamaManifestSurfacesTypedConfigMetadata) {
   EXPECT_EQ(config.ropeScaling, us4::RopeScalingType::kDynamic);
   EXPECT_FLOAT_EQ(config.ropeScale, 1.0F);
 }
+
+TEST(ModelAssetContractTest,
+     LlamaBinaryAssetsInheritSiblingManifestMetadataWhenAvailable) {
+  us4::ModelAsset asset;
+  std::string error;
+  const std::filesystem::path inputPath =
+      FixtureRoot() / "llama-3.1-8b" / "toy-llama.gguf";
+
+  ASSERT_TRUE(us4::LoadModelAsset(inputPath, asset, &error)) << error;
+
+  EXPECT_EQ(asset.format, us4::ModelFormat::kGguf);
+  EXPECT_EQ(asset.family, "llama");
+  EXPECT_EQ(asset.modelName, "toy-llama");
+  EXPECT_EQ(asset.weightDType, us4::DType::kFloat16);
+  EXPECT_EQ(asset.seed, 31800U);
+  EXPECT_EQ(asset.defaultPromptToken, "hello");
+  EXPECT_FALSE(asset.vocabulary.empty());
+  EXPECT_EQ(asset.metadata.at("hidden_size"), "8");
+  EXPECT_EQ(asset.metadata.at("query_heads"), "2");
+  EXPECT_EQ(asset.metadata.at("kv_heads"), "1");
+  EXPECT_EQ(asset.metadata.at("tokenizer_json"),
+            (FixtureRoot() / "llama-3.1-8b" / "tokenizer.json").string());
+}

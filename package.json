@@ -1,6 +1,6 @@
 {
   "name": "@wesleysimplicio/agentic-starter",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "AI-friendly project scaffold with AGENTS.md ecosystem (Claude Code, Codex, Copilot, Cursor, Aider, Hermes, OpenClaw). Specs as code, atomic tasks, automated Definition of Done, reusable skills, multi-agent ready.",
   "type": "commonjs",
   "bin": {

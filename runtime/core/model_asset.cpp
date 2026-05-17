@@ -116,6 +116,36 @@ bool LoadFixtureManifest(const std::filesystem::path &path, ModelAsset &asset,
   return true;
 }
 
+void HydrateFromSiblingManifest(const std::filesystem::path &assetPath,
+                                ModelAsset &asset) {
+  const std::filesystem::path siblingManifest =
+      assetPath.parent_path() / "model.us4manifest";
+  if (!std::filesystem::exists(siblingManifest)) {
+    return;
+  }
+
+  ModelAsset manifestAsset;
+  std::string ignoredError;
+  if (!LoadFixtureManifest(siblingManifest, manifestAsset, &ignoredError)) {
+    return;
+  }
+
+  if (asset.family.empty()) {
+    asset.family = manifestAsset.family;
+  }
+  asset.weightDType = manifestAsset.weightDType;
+  asset.seed = manifestAsset.seed;
+  asset.vocabulary = manifestAsset.vocabulary;
+  asset.defaultPromptToken = manifestAsset.defaultPromptToken;
+  asset.metadata = manifestAsset.metadata;
+
+  const std::filesystem::path tokenizerPath =
+      assetPath.parent_path() / "tokenizer.json";
+  if (std::filesystem::exists(tokenizerPath)) {
+    asset.metadata["tokenizer_json"] = tokenizerPath.string();
+  }
+}
+
 std::string InferFamilyFromStem(const std::string &stem) {
   const std::string normalized = ToLower(stem);
   if (normalized.find("qwen") != std::string::npos) {
@@ -184,11 +214,13 @@ bool LoadModelAsset(const std::filesystem::path &path, ModelAsset &asset,
   if (extension == ".gguf") {
     asset.format = ModelFormat::kGguf;
     asset.weightDType = DType::kFloat16;
+    HydrateFromSiblingManifest(resolved, asset);
     return true;
   }
   if (extension == ".safetensors") {
     asset.format = ModelFormat::kSafetensors;
     asset.weightDType = DType::kFloat16;
+    HydrateFromSiblingManifest(resolved, asset);
     return true;
   }
 

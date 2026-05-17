@@ -1,0 +1,5 @@
+{
+  "model": "toy-llama-tokenizer",
+  "version": 1,
+  "normalizer": "whitespace"
+}
